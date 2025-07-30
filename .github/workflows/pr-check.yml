@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  pull-requests: write
+  contents: read
+
 jobs:
   check-py-files:
     name: "Check new Python files can run"
@@ -50,9 +54,9 @@ jobs:
       - name: Load CODEOWNERS accounts
         id: load_codeowners
         run: |
-          CODEOWNERS_FILE="./CODEOWNERS"
+          CODEOWNERS_FILE=".github/CODEOWNERS"
           if [ -f "$CODEOWNERS_FILE" ]; then
-            OWNERS=$(grep -o '@[a-zA-Z0-9_\-./]*' "$CODEOWNERS_FILE" | sed 's/@//g' | sort -u)
+            OWNERS=$(grep -o '@[a-zA-Z0-9_\-./]*' "$CODEOWNERS_FILE" | sed 's/@//g' | sort -u | xargs)
           else
             OWNERS=""
           fi
