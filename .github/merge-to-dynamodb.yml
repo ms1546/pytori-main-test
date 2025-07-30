@@ -32,19 +32,8 @@ jobs:
 
       - name: Increment ID counter and upload to DynamoDB
         run: |
-          COUNTER_TABLE="ShiritoriCounters"
           WORD_TABLE="ShiritoriMergedWords"
-
-          # インクリメント（アトミックカウンタ）
-          response=$(aws dynamodb update-item \
-            --table-name "$COUNTER_TABLE" \
-            --key '{"counter_name": {"S": "next_id"}}' \
-            --update-expression "ADD current_value :inc" \
-            --expression-attribute-values '{":inc": {"N": "1"}}' \
-            --return-values UPDATED_NEW)
-
-          ID=$(echo "$response" | jq -r '.Attributes.current_value.N')
-
+          ID=$(date +%s%N | cut -b1-13)
           REPO_NAME=$(basename "${{ github.repository }}")
           MERGED_ON=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CURRENT_WORD="${{ steps.extract_word.outputs.current_word }}"
