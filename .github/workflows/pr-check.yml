@@ -65,6 +65,7 @@ jobs:
           PR_NUMBER=${{ github.event.pull_request.number }}
           OWNER=${{ github.repository_owner }}
           REPO=$(basename "${{ github.repository }}")
+
           authors=$(gh api graphql -f query='
             query($owner:String!, $repo:String!, $number:Int!) {
               repository(owner:$owner, name:$repo) {
@@ -82,14 +83,15 @@ jobs:
                 }
               }
             }' \
-            -f owner="$OWNER" -f repo="$REPO" -F number="$PR_NUMBER" \
-            --jq '.data.repository.pullRequest.commits.nodes[].commit.author.user.login')
+          -f owner="$OWNER" -f repo="$REPO" -F number="$PR_NUMBER" \
+          --jq '.data.repository.pullRequest.commits.nodes[].commit.author.user.login')
 
           BOT_USERS=("dependabot[bot]" "github-actions[bot]")
           CODEOWNERS=(${{ steps.load_codeowners.outputs.owners }})
 
           prev=""
           duplicated=""
+
           while read author; do
             skip=false
             for bot in "${BOT_USERS[@]}"; do
@@ -99,6 +101,7 @@ jobs:
               [ "$author" = "$owner" ] && skip=true
             done
             [ "$skip" = true ] && continue
+
             if [ "$author" = "$prev" ]; then
               duplicated="$author"
               break
@@ -143,9 +146,12 @@ jobs:
     name: "AI Keyword Check via Claude Code"
     needs: [check-py-files, check-commit-author, check-shiritori-chain]
     runs-on: ubuntu-latest
+    outputs:
+      summary: ${{ steps.claude.outputs.summary }}
     steps:
       - uses: actions/checkout@v4
       - name: Trigger Claude review
+        id: claude
         uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -154,6 +160,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: Post Claude review to PR
+        run: |
+          echo "${{ steps.claude.outputs.summary }}" | gh pr comment ${{ github.event.pull_request.number }} --body -
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   fail-on-error:
     name: "Fail on ❌ in latest comment"

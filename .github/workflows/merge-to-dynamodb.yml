@@ -7,30 +7,45 @@ on:
 
 jobs:
   upload-shiritori-word:
-    name: "Extract filename and upload to DynamoDB"
+    name: "Extract Python filename and upload to DynamoDB"
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Set up AWS CLI
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-1
 
+      - name: Fetch base branch to compare diff
+        run: |
+          git fetch origin ${{ github.event.before }} --depth=1 || echo "Fallback: could not fetch previous commit"
+
       - name: Extract current_word from merged .py file
         id: extract_word
         run: |
-          files=$(git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep '\.py$' | sed -E 's|.*/||' | sed -E 's|\.py$||')
+          base_commit=${{ github.event.before }}
+          head_commit=${{ github.sha }}
+
+          echo "📌 Base: $base_commit"
+          echo "📌 Head: $head_commit"
+
+          files=$(git diff --name-only "$base_commit" "$head_commit" | grep '\.py$' | sed -E 's|.*/||' | sed -E 's|\.py$||')
           current_word=$(echo "$files" | head -n 1)
+
           if [ -z "$current_word" ]; then
             echo "❌ Pythonファイルが見つかりません"
             exit 1
           fi
-          echo "current_word=$current_word" >> $GITHUB_OUTPUT
 
-      - name: Increment ID counter and upload to DynamoDB
+          echo "✅ current_word = $current_word"
+          echo "current_word=$current_word" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to DynamoDB
         run: |
           WORD_TABLE="ShiritoriMergedWords"
           ID=$(date +%s%N | cut -b1-13)
@@ -38,7 +53,14 @@ jobs:
           MERGED_ON=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CURRENT_WORD="${{ steps.extract_word.outputs.current_word }}"
 
-          echo "✅ Generated ID: $ID"
+          # 13桁の擬似ID（ミリ秒）
+          ID=$(date +%s%3N)
+
+          echo "📝 Inserting into DynamoDB: $WORD_TABLE"
+          echo "📦 ID: $ID"
+          echo "📦 Repo: $REPO_NAME"
+          echo "📦 Word: $CURRENT_WORD"
+          echo "📦 Time: $MERGED_ON"
 
           aws dynamodb put-item \
             --table-name "$WORD_TABLE" \
