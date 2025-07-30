@@ -8,34 +8,38 @@ jobs:
   check-py-files:
     name: "Check new Python files can run"
     runs-on: ubuntu-latest
+    outputs:
+      repo_name: ${{ steps.extract.outputs.repo_name }}
+      new_word: ${{ steps.extract.outputs.new_word }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Find new Python files and check syntax
+        id: extract
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🔍 Checking Python syntax for new files..."
+          echo "🔍 Checking new Python files..."
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO_NAME=$(basename "${{ github.repository }}")
+          echo "repo_name=$REPO_NAME" >> "$GITHUB_OUTPUT"
 
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          NEW_FILES=$(gh pr view "$PR_NUMBER" --json files -q '.files[] | select(.status=="added") | .path' | grep '\.py$' || true)
+          FILES=$(gh pr view "$PR_NUMBER" --json files -q '.files[] | select(.status=="added") | .path' | grep '\.py$' || true)
 
-          if [ -z "$NEW_FILES" ]; then
-            echo "✅ No new Python files to check."
+          if [ -z "$FILES" ]; then
+            echo "✅ No new Python files found."
+            echo "new_word=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "🧪 Checking the following files:"
-          echo "$NEW_FILES"
-
-          for file in $NEW_FILES; do
-            python3 -m py_compile "$file" || {
-              echo "❌ Syntax error in $file"
-              exit 1
-            }
+          echo "🧪 Checking Python syntax..."
+          for file in $FILES; do
+            python3 -m py_compile "$file" || exit 1
           done
 
-          echo "✅ All new Python files passed syntax check."
+          FILE_NAME=$(basename "$FILES" .py)
+          NEW_WORD=$(echo "$FILE_NAME" | tr '[:upper:]' '[:lower:]')
+          echo "new_word=$NEW_WORD" >> "$GITHUB_OUTPUT"
 
   check-commit-author:
     name: "Check for consecutive commit authors"
@@ -53,7 +57,6 @@ jobs:
             OWNERS=""
           fi
           echo "owners=$OWNERS" >> "$GITHUB_OUTPUT"
-          echo "運営アカウント: $OWNERS"
 
       - name: Check authors using gh api
         env:
@@ -62,8 +65,6 @@ jobs:
           PR_NUMBER=${{ github.event.pull_request.number }}
           OWNER=${{ github.repository_owner }}
           REPO=$(basename "${{ github.repository }}")
-
-          # コミット author の一覧を取得
           authors=$(gh api graphql -f query='
             query($owner:String!, $repo:String!, $number:Int!) {
               repository(owner:$owner, name:$repo) {
@@ -81,29 +82,23 @@ jobs:
                 }
               }
             }' \
-          -f owner="$OWNER" -f repo="$REPO" -F number="$PR_NUMBER" \
-          --jq '.data.repository.pullRequest.commits.nodes[].commit.author.user.login')
+            -f owner="$OWNER" -f repo="$REPO" -F number="$PR_NUMBER" \
+            --jq '.data.repository.pullRequest.commits.nodes[].commit.author.user.login')
 
-          echo "🔍 Commit authors:"
-          echo "$authors"
-
-          # 除外対象
           BOT_USERS=("dependabot[bot]" "github-actions[bot]")
           CODEOWNERS=(${{ steps.load_codeowners.outputs.owners }})
 
           prev=""
           duplicated=""
-
           while read author; do
-            skip="false"
+            skip=false
             for bot in "${BOT_USERS[@]}"; do
-              [ "$author" = "$bot" ] && skip="true"
+              [ "$author" = "$bot" ] && skip=true
             done
             for owner in "${CODEOWNERS[@]}"; do
-              [ "$author" = "$owner" ] && skip="true"
+              [ "$author" = "$owner" ] && skip=true
             done
-            [ "$skip" = "true" ] && continue
-
+            [ "$skip" = true ] && continue
             if [ "$author" = "$prev" ]; then
               duplicated="$author"
               break
@@ -112,17 +107,41 @@ jobs:
           done <<< "$authors"
 
           if [ -n "$duplicated" ]; then
-            echo "❌ 同じ author.name（$duplicated）が連続でコミットしています。"
-            MESSAGE="❌ **${duplicated}** が連続コミット中。運営やbot以外の人は注意！"
-            gh pr comment "$PR_NUMBER" --body "$MESSAGE" --repo "$OWNER/$REPO"
+            echo "❌ 重複 author: $duplicated"
+            gh pr comment "$PR_NUMBER" --body "❌ **${duplicated}** が連続コミットしています。" --repo "$OWNER/$REPO"
             exit 1
           fi
 
-          echo "✅ OK: 重複 author.name はありません。"
+  check-shiritori-chain:
+    name: "Check shiritori chain with DynamoDB"
+    needs: check-py-files
+    if: ${{ needs.check-py-files.outputs.new_word != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Install boto3
+        run: pip install boto3
+
+      - name: Run shiritori chain check
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ap-northeast-1
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_NAME: ${{ needs.check-py-files.outputs.repo_name }}
+          NEW_WORD: ${{ needs.check-py-files.outputs.new_word }}
+        run: python3 scripts/check_shiritori.py
 
   review-via-claude:
     name: "AI Keyword Check via Claude Code"
-    needs: [check-py-files, check-commit-author]
+    needs: [check-py-files, check-commit-author, check-shiritori-chain]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
