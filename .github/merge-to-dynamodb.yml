@@ -1,0 +1,61 @@
+name: 🗃️ Insert Shiritori Word to DynamoDB on Merge
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  upload-shiritori-word:
+    name: "Extract filename and upload to DynamoDB"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-1
+
+      - name: Extract current_word from merged .py file
+        id: extract_word
+        run: |
+          files=$(git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | grep '\.py$' | sed -E 's|.*/||' | sed -E 's|\.py$||')
+          current_word=$(echo "$files" | head -n 1)
+          if [ -z "$current_word" ]; then
+            echo "❌ Pythonファイルが見つかりません"
+            exit 1
+          fi
+          echo "current_word=$current_word" >> $GITHUB_OUTPUT
+
+      - name: Increment ID counter and upload to DynamoDB
+        run: |
+          COUNTER_TABLE="ShiritoriCounters"
+          WORD_TABLE="ShiritoriMergedWords"
+
+          # インクリメント（アトミックカウンタ）
+          response=$(aws dynamodb update-item \
+            --table-name "$COUNTER_TABLE" \
+            --key '{"counter_name": {"S": "next_id"}}' \
+            --update-expression "ADD current_value :inc" \
+            --expression-attribute-values '{":inc": {"N": "1"}}' \
+            --return-values UPDATED_NEW)
+
+          ID=$(echo "$response" | jq -r '.Attributes.current_value.N')
+
+          REPO_NAME=$(basename "${{ github.repository }}")
+          MERGED_ON=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          CURRENT_WORD="${{ steps.extract_word.outputs.current_word }}"
+
+          echo "✅ Generated ID: $ID"
+
+          aws dynamodb put-item \
+            --table-name "$WORD_TABLE" \
+            --item '{
+              "id": {"N": "'$ID'"},
+              "repository_name": {"S": "'$REPO_NAME'"},
+              "current_word": {"S": "'$CURRENT_WORD'"},
+              "merged_on": {"S": "'$MERGED_ON'"}
+            }'

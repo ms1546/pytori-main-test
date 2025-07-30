@@ -1,0 +1,150 @@
+name: 🩷 Claude Python Keyword Checker
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-py-files:
+    name: "Check new Python files can run"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find new Python files and check syntax
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔍 Checking Python syntax for new files..."
+
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          NEW_FILES=$(gh pr view "$PR_NUMBER" --json files -q '.files[] | select(.status=="added") | .path' | grep '\.py$' || true)
+
+          if [ -z "$NEW_FILES" ]; then
+            echo "✅ No new Python files to check."
+            exit 0
+          fi
+
+          echo "🧪 Checking the following files:"
+          echo "$NEW_FILES"
+
+          for file in $NEW_FILES; do
+            python3 -m py_compile "$file" || {
+              echo "❌ Syntax error in $file"
+              exit 1
+            }
+          done
+
+          echo "✅ All new Python files passed syntax check."
+
+  check-commit-author:
+    name: "Check for consecutive commit authors"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load CODEOWNERS accounts
+        id: load_codeowners
+        run: |
+          CODEOWNERS_FILE="./CODEOWNERS"
+          if [ -f "$CODEOWNERS_FILE" ]; then
+            OWNERS=$(grep -o '@[a-zA-Z0-9_\-./]*' "$CODEOWNERS_FILE" | sed 's/@//g' | sort -u)
+          else
+            OWNERS=""
+          fi
+          echo "owners=$OWNERS" >> "$GITHUB_OUTPUT"
+          echo "運営アカウント: $OWNERS"
+
+      - name: Check authors using gh api
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          OWNER=${{ github.repository_owner }}
+          REPO=$(basename "${{ github.repository }}")
+
+          # コミット author の一覧を取得
+          authors=$(gh api graphql -f query='
+            query($owner:String!, $repo:String!, $number:Int!) {
+              repository(owner:$owner, name:$repo) {
+                pullRequest(number:$number) {
+                  commits(first:100) {
+                    nodes {
+                      commit {
+                        author {
+                          name
+                          user { login }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' \
+          -f owner="$OWNER" -f repo="$REPO" -F number="$PR_NUMBER" \
+          --jq '.data.repository.pullRequest.commits.nodes[].commit.author.user.login')
+
+          echo "🔍 Commit authors:"
+          echo "$authors"
+
+          # 除外対象
+          BOT_USERS=("dependabot[bot]" "github-actions[bot]")
+          CODEOWNERS=(${{ steps.load_codeowners.outputs.owners }})
+
+          prev=""
+          duplicated=""
+
+          while read author; do
+            skip="false"
+            for bot in "${BOT_USERS[@]}"; do
+              [ "$author" = "$bot" ] && skip="true"
+            done
+            for owner in "${CODEOWNERS[@]}"; do
+              [ "$author" = "$owner" ] && skip="true"
+            done
+            [ "$skip" = "true" ] && continue
+
+            if [ "$author" = "$prev" ]; then
+              duplicated="$author"
+              break
+            fi
+            prev="$author"
+          done <<< "$authors"
+
+          if [ -n "$duplicated" ]; then
+            echo "❌ 同じ author.name（$duplicated）が連続でコミットしています。"
+            MESSAGE="❌ **${duplicated}** が連続コミット中。運営やbot以外の人は注意！"
+            gh pr comment "$PR_NUMBER" --body "$MESSAGE" --repo "$OWNER/$REPO"
+            exit 1
+          fi
+
+          echo "✅ OK: 重複 author.name はありません。"
+
+  review-via-claude:
+    name: "AI Keyword Check via Claude Code"
+    needs: [check-py-files, check-commit-author]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger Claude review
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: "./claude_prompt.txt"
+          allowed_tools: "GlobTool,Bash,View,Write,Read,Edit"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+  fail-on-error:
+    name: "Fail on ❌ in latest comment"
+    needs: review-via-claude
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for ❌ in latest PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          latest=$(gh pr view ${{ github.event.pull_request.number }} --json comments -q ".comments[-1].body")
+          echo "$latest" | grep -q "❌" && exit 1 || exit 0
