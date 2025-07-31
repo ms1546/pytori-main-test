@@ -25,10 +25,15 @@ jobs:
         run: |
           echo "🔍 Checking new Python files..."
           PR_NUMBER="${{ github.event.pull_request.number }}"
+          OWNER="${{ github.repository_owner }}"
           REPO_NAME=$(basename "${{ github.repository }}")
           echo "repo_name=$REPO_NAME" >> "$GITHUB_OUTPUT"
 
-          FILES=$(gh pr view "$PR_NUMBER" --json files -q '.files[] | select(.status=="added") | .path' | grep '\.py$' || true)
+          RAW=$(gh pr view "$PR_NUMBER" --repo "$OWNER/$REPO_NAME" --json files)
+          FILES=$(echo "$RAW" | jq -r '.files[].path' | grep '\.py$' || true)
+
+          echo "📄 Python files found:"
+          echo "$FILES"
 
           if [ -z "$FILES" ]; then
             echo "✅ No new Python files found."
@@ -41,7 +46,8 @@ jobs:
             python3 -m py_compile "$file" || exit 1
           done
 
-          FILE_NAME=$(basename "$FILES" .py)
+          FIRST_FILE=$(echo "$FILES" | head -n 1)
+          FILE_NAME=$(basename "$FIRST_FILE" .py)
           NEW_WORD=$(echo "$FILE_NAME" | tr '[:upper:]' '[:lower:]')
           echo "new_word=$NEW_WORD" >> "$GITHUB_OUTPUT"
 

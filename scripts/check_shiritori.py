@@ -1,50 +1,44 @@
 import boto3
 import os
-import sys
-import subprocess
+from boto3.dynamodb.conditions import Key
 
 def main():
-    repo = os.environ.get("REPO_NAME", "").lower()
-    new_word = os.environ.get("NEW_WORD", "").lower()
-    pr_number = os.environ.get("PR_NUMBER", "")
+    repo_name = os.environ.get("REPO_NAME")
+    new_word = os.environ.get("NEW_WORD")
+    region = os.environ.get("AWS_REGION", "ap-northeast-1")
 
-    if not (repo and new_word and pr_number):
-        print("Missing environment variables.")
-        sys.exit(1)
+    if not repo_name or not new_word:
+        print("❌ REPO_NAME または NEW_WORD が未定義です")
+        exit(1)
 
-    dynamodb = boto3.client("dynamodb", region_name=os.getenv("AWS_REGION"))
+    dynamodb = boto3.resource("dynamodb", region_name=region)
+    table = dynamodb.Table("ShiritoriMergedWords")
 
     try:
-        resp = dynamodb.query(
-            TableName="pytori_shiritori",
-            KeyConditionExpression="repository_name = :repo",
-            ExpressionAttributeValues={":repo": {"S": repo}},
-            ScanIndexForward=False,
-            Limit=1
+        response = table.query(
+            IndexName="repository_name-index",
+            KeyConditionExpression=Key("repository_name").eq(repo_name)
         )
+        items = response.get("Items", [])
+        print(f"📦 取得レコード数: {len(items)}")
+
+        if not items:
+            print("🆕 新規参加リポジトリです")
+            exit(0)
+
+        last_word = items[-1].get("current_word", "")
+        print(f"🔚 最後の単語: {last_word}")
+        print(f"🆕 提出された単語: {new_word}")
+
+        if not last_word or new_word.startswith(last_word[-1]):
+            print("✅ しりとり成立！")
+            exit(0)
+
+        raise Exception(f"❌ しりとり失敗: {last_word} → {new_word}")
+
     except Exception as e:
-        print("🔴 DynamoDB query failed:", e)
-        sys.exit(1)
-
-    items = resp.get("Items", [])
-    if not items:
-        print("🟡 No previous records found. Skipping shiritori check.")
-        sys.exit(0)
-
-    prev_word = items[0]["current_word"]["S"].lower()
-    expected = new_word[0]
-    actual = prev_word[-1]
-
-    if expected != actual:
-        msg = f"❌ しりとりエラー：前回の末尾「{actual}」→「{new_word}」は「{expected}」"
-        print(msg)
-        subprocess.run([
-            "gh", "pr", "comment", pr_number,
-            "--body", msg
-        ])
-        sys.exit(1)
-    else:
-        print(f"✅ OK: しりとり成立（{prev_word} → {new_word}）")
+        print(f"🔴 DynamoDB query failed: {e}")
+        exit(1)
 
 if __name__ == "__main__":
     main()
