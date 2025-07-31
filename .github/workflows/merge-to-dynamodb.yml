@@ -35,7 +35,7 @@ jobs:
           echo "📌 Head: $head_commit"
 
           files=$(git diff --name-only "$base_commit" "$head_commit" | grep '\.py$' | sed -E 's|.*/||' | sed -E 's|\.py$||')
-          current_word=$(echo "$files" | head -n 1)
+          current_word=$(echo "$files" | head -n 1 | sed -E 's/^[0-9]+_//')
 
           if [ -z "$current_word" ]; then
             echo "❌ Pythonファイルが見つかりません"
