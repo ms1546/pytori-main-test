@@ -48,27 +48,29 @@ jobs:
   check-commit-author:
     name: "Check for consecutive commit authors"
     runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.set-result.outputs.result }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Load CODEOWNERS accounts
-        id: load_codeowners
+      - name: Load admin list
         run: |
-          CODEOWNERS_FILE=".github/CODEOWNERS"
-          if [ -f "$CODEOWNERS_FILE" ]; then
-            OWNERS=$(grep -o '@[a-zA-Z0-9_\-./]*' "$CODEOWNERS_FILE" | sed 's/@//g' | sort -u | xargs)
+          if [ -f "admin.txt" ]; then
+            cat admin.txt | sort -u > admins.txt
           else
-            OWNERS=""
+            touch admins.txt
           fi
-          echo "owners=$OWNERS" >> "$GITHUB_OUTPUT"
 
-      - name: Check authors using gh api
+      - name: Check for duplicate commit authors
+        id: set-result
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           OWNER=${{ github.repository_owner }}
           REPO=$(basename "${{ github.repository }}")
+
+          mapfile -t ADMIN_USERS < admins.txt
 
           authors=$(gh api graphql -f query='
             query($owner:String!, $repo:String!, $number:Int!) {
@@ -91,18 +93,13 @@ jobs:
           --jq '.data.repository.pullRequest.commits.nodes[].commit.author.user.login')
 
           BOT_USERS=("dependabot[bot]" "github-actions[bot]")
-          CODEOWNERS=(${{ steps.load_codeowners.outputs.owners }})
-
           prev=""
           duplicated=""
 
-          while read author; do
+          while read -r author; do
             skip=false
             for bot in "${BOT_USERS[@]}"; do
               [ "$author" = "$bot" ] && skip=true
-            done
-            for owner in "${CODEOWNERS[@]}"; do
-              [ "$author" = "$owner" ] && skip=true
             done
             [ "$skip" = true ] && continue
 
@@ -114,10 +111,21 @@ jobs:
           done <<< "$authors"
 
           if [ -n "$duplicated" ]; then
+            for admin in "${ADMIN_USERS[@]}"; do
+              if [ "$duplicated" = "$admin" ]; then
+                echo "⚠️ admin ${duplicated} の連続コミットは許可されています。"
+                echo "result=pass" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
             echo "❌ 重複 author: $duplicated"
             gh pr comment "$PR_NUMBER" --body "❌ **${duplicated}** が連続コミットしています。" --repo "$OWNER/$REPO"
+            echo "result=fail" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+          echo "✅ 重複 author なし"
+          echo "result=pass" >> "$GITHUB_OUTPUT"
 
   check-shiritori-chain:
     name: "Check shiritori chain with DynamoDB"
@@ -149,6 +157,7 @@ jobs:
   review-via-claude:
     name: "AI Keyword Check via Claude Code"
     needs: [check-py-files, check-commit-author, check-shiritori-chain]
+    if: ${{ needs.check-commit-author.outputs.result != 'fail' }}
     runs-on: ubuntu-latest
     outputs:
       summary: ${{ steps.claude.outputs.summary }}
@@ -175,6 +184,7 @@ jobs:
     name: "Fail on ❌ in latest comment"
     needs: review-via-claude
     runs-on: ubuntu-latest
+    if: ${{ needs.check-commit-author.outputs.result != 'fail' }}
     steps:
       - uses: actions/checkout@v4
       - name: Check for ❌ in latest PR comment
