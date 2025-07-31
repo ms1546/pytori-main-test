@@ -1,5 +1,6 @@
 import boto3
 import os
+import re
 from boto3.dynamodb.conditions import Key
 
 def main():
@@ -10,6 +11,9 @@ def main():
     if not repo_name or not new_word:
         print("❌ REPO_NAME または NEW_WORD が未定義です")
         exit(1)
+
+    new_word = re.sub(r'^\d+_', '', new_word)
+    print(f"🔤 正規化された単語: {new_word}")
 
     dynamodb = boto3.resource("dynamodb", region_name=region)
     table = dynamodb.Table("ShiritoriMergedWords")
