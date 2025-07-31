@@ -30,7 +30,9 @@ def main():
             print("🆕 新規参加リポジトリです")
             exit(0)
 
-        last_word = items[-1].get("current_word", "")
+        sorted_items = sorted(items, key=lambda x: x.get("merged_on", ""), reverse=True)
+        last_word = sorted_items[0].get("current_word", "")
+
         print(f"🔚 最後の単語: {last_word}")
         print(f"🆕 提出された単語: {new_word}")
 
