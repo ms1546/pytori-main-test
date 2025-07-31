@@ -48,7 +48,7 @@ jobs:
 
           FIRST_FILE=$(echo "$FILES" | head -n 1)
           FILE_NAME=$(basename "$FIRST_FILE" .py)
-          NEW_WORD=$(echo "$FILE_NAME" | tr '[:upper:]' '[:lower:]')
+          NEW_WORD=$(echo "$FILE_NAME" | sed -E 's/^[0-9]+_//' | tr '[:upper:]' '[:lower:]')
           echo "new_word=$NEW_WORD" >> "$GITHUB_OUTPUT"
 
   check-commit-author:
